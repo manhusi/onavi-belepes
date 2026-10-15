@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="hu">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>ONavi belépés</title>
+<!--
+  Bejelentkező és engedélyező oldal a „ONavi tudáskönyvtár” csatlakozóhoz (docs/MCP_TERV.md 10. fejezet).
+  A ChatGPT vagy a Claude nyitja meg a Supabase belépési folyamatából (?authorization_id=…): a felhasználó belép,
+  megnézi, ki kér hozzáférést, és engedélyezi. Titok nincs benne: a projekt címe és nyilvános kulcsa a config.js-ben.
+-->
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1d2330; --muted: #5b6474; --line: #dfe3ea;
+    --accent: #1f5fbf; --accent-text: #ffffff; --danger: #b42318; --ok: #157347;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #12151b; --card: #1b2029; --text: #e7eaf0; --muted: #a2abba; --line: #2c3340;
+      --accent: #6aa3ff; --accent-text: #0d1117; --danger: #ff8a80; --ok: #6fd39b;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #12151b; --card: #1b2029; --text: #e7eaf0; --muted: #a2abba; --line: #2c3340;
+    --accent: #6aa3ff; --accent-text: #0d1117; --danger: #ff8a80; --ok: #6fd39b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 16px;
+    background: var(--bg); color: var(--text);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { width: 100%; max-width: 420px; background: var(--card); border: 1px solid var(--line);
+         border-radius: 14px; padding: 28px 24px; }
+  h1 { font-size: 1.25rem; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; font-size: .95rem; }
+  label { display: block; font-size: .9rem; margin: 14px 0 6px; }
+  input { width: 100%; padding: 11px 12px; border: 1px solid var(--line); border-radius: 9px;
+          background: transparent; color: var(--text); font-size: 1rem; }
+  button { width: 100%; padding: 12px; margin-top: 18px; border: 0; border-radius: 9px; font-size: 1rem;
+           cursor: pointer; background: var(--accent); color: var(--accent-text); font-weight: 600; }
+  button.secondary { background: transparent; color: var(--text); border: 1px solid var(--line);
+                     font-weight: 500; margin-top: 10px; }
+  button:disabled { opacity: .6; cursor: default; }
+  .msg { margin-top: 14px; font-size: .92rem; }
+  .err { color: var(--danger); }
+  .box { border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin: 4px 0 6px; }
+  .box p { margin: 6px 0; }
+  ul { margin: 6px 0 0; padding-left: 20px; }
+  li { margin: 3px 0; }
+  .small { color: var(--muted); font-size: .85rem; }
+  a { color: var(--accent); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>ONavi tudáskönyvtár</h1>
+  <p class="sub" id="sub">Belépés a csatlakozóhoz</p>
+
+  <section id="loading"><p class="small">Betöltés…</p></section>
+
+  <form id="login" hidden>
+    <label for="email">E-mail-cím</label>
+    <input id="email" type="email" autocomplete="username" required>
+    <label for="password">Jelszó</label>
+    <input id="password" type="password" autocomplete="current-password" required>
+    <button type="submit" id="login-btn">Belépés</button>
+    <p class="msg err" id="login-err" hidden></p>
+  </form>
+
+  <section id="consent" hidden>
+    <div class="box">
+      <p><strong id="client-name"></strong> hozzáférést kér a nevedben
+        (<span id="user-email"></span>):</p>
+      <ul>
+        <li>olvashatja a tudáskönyvtárat és az alapanyagokat;</li>
+        <li>vázlatot menthet és javíthat (jóváhagyni, élővé tenni és törölni nem tud);</li>
+        <li>olvashatja a fejlesztői egyeztetést, és írhat bele a nevedben.</li>
+      </ul>
+    </div>
+    <button type="button" id="approve">Engedélyezem</button>
+    <button type="button" class="secondary" id="deny">Elutasítom</button>
+    <p class="small">Nem te vagy? <a href="#" id="switch">Belépés más fiókkal</a></p>
+    <p class="msg err" id="consent-err" hidden></p>
+  </section>
+
+  <section id="done" hidden><p class="msg" id="done-text"></p></section>
+  <section id="fail" hidden><p class="msg err" id="fail-text"></p></section>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.114.0/dist/umd/supabase.js"></script>
+<script src="config.js"></script>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const views = ["loading", "login", "consent", "done", "fail"];
+  function show(view) { for (const v of views) $(v).hidden = v !== view; }
+  function fail(text) { $("fail-text").textContent = text; show("fail"); }
+  function go(url, text) { $("done-text").textContent = text; show("done"); location.assign(url); }
+
+  const authorizationId = new URLSearchParams(location.search).get("authorization_id");
+  const cfg = window.ONAVI_BELEPES;
+  const sb = supabase.createClient(cfg.url, cfg.key);
+
+  async function details() {
+    show("loading");
+    const { data, error } = await sb.auth.oauth.getAuthorizationDetails(authorizationId);
+    if (error) return fail(`Nem sikerült betölteni az engedélyezést: ${error.message}`);
+    if (!data.authorization_id && data.redirect_url) {
+      return go(data.redirect_url, "Már engedélyezted; visszairányítunk…");
+    }
+    $("client-name").textContent = data.client?.name || "Egy alkalmazás";
+    $("user-email").textContent = data.user?.email || "";
+    $("sub").textContent = "Hozzáférés engedélyezése";
+    show("consent");
+  }
+
+  async function decide(approve) {
+    $("approve").disabled = $("deny").disabled = true;
+    $("consent-err").hidden = true;
+    const { data, error } = approve
+      ? await sb.auth.oauth.approveAuthorization(authorizationId)
+      : await sb.auth.oauth.denyAuthorization(authorizationId);
+    if (error) {
+      $("approve").disabled = $("deny").disabled = false;
+      $("consent-err").textContent = `Nem sikerült: ${error.message}`;
+      $("consent-err").hidden = false;
+      return;
+    }
+    go(data.redirect_url, approve ? "Engedélyezve; visszairányítunk…" : "Elutasítva; visszairányítunk…");
+  }
+
+  $("login").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    $("login-btn").disabled = true;
+    $("login-err").hidden = true;
+    const { error } = await sb.auth.signInWithPassword({
+      email: $("email").value.trim(),
+      password: $("password").value,
+    });
+    $("login-btn").disabled = false;
+    if (error) {
+      $("login-err").textContent = "Hibás e-mail-cím vagy jelszó.";
+      $("login-err").hidden = false;
+      return;
+    }
+    await details();
+  });
+  $("approve").addEventListener("click", () => decide(true));
+  $("deny").addEventListener("click", () => decide(false));
+  $("switch").addEventListener("click", async (e) => {
+    e.preventDefault();
+    await sb.auth.signOut();
+    $("sub").textContent = "Belépés a csatlakozóhoz";
+    show("login");
+  });
+
+  (async () => {
+    if (!authorizationId) {
+      return fail("Ezt az oldalt a ChatGPT vagy a Claude nyitja meg, amikor a csatlakozót beállítod; így magában nem használható.");
+    }
+    const { data } = await sb.auth.getSession();
+    if (data.session) await details();
+    else show("login");
+  })();
+</script>
+</body>
+</html>
